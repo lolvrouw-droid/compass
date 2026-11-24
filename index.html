@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delft Toilets Map</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display: flex; flex-direction: column; background: #f4f5f7; color: #1d2733; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 14px; background: #1f5f8b; color: #fff; z-index: 1000; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .stats { font-size: 13px; opacity: .9; }
+  header .spacer { flex: 1; }
+  header button, header a.btn { font: inherit; font-size: 13px; padding: 6px 10px; border: 0; border-radius: 6px; background: #fff; color: #1f5f8b; cursor: pointer; text-decoration: none; }
+  header button:hover, header a.btn:hover { background: #e6eef5; }
+  #notice { display: none; padding: 8px 14px; background: #fff3c4; color: #5b4500; font-size: 13px; border-bottom: 1px solid #e8d37a; }
+  #picker { display: none; padding: 14px; background: #fff; border-bottom: 1px solid #ddd; font-size: 14px; }
+  #map { flex: 1; }
+  .legend { background: #fff; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.6; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; border: 1.5px solid #333; }
+  .popup h3 { margin: 0 0 6px; font-size: 15px; }
+  .popup table { border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
+  .popup td { padding: 1px 8px 1px 0; vertical-align: top; }
+  .popup td:first-child { color: #667; }
+  .popup textarea { width: 100%; height: 54px; font: inherit; font-size: 13px; padding: 6px; resize: none; border: 1px solid #bbb; border-radius: 4px; }
+  .popup .row { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+  .popup .count { font-size: 11px; color: #667; }
+  .popup .count.full { color: #c0392b; }
+  .popup button { font: inherit; font-size: 13px; padding: 4px 12px; border: 0; border-radius: 4px; background: #e67e22; color: #fff; cursor: pointer; }
+  .popup button:disabled { background: #ccc; cursor: default; }
+  .popup ul { list-style: none; margin: 8px 0 0; padding: 0; max-height: 160px; overflow-y: auto; }
+  .popup li { font-size: 13px; padding: 5px 0; border-top: 1px solid #eee; }
+  .popup li .meta { display: block; font-size: 11px; color: #889; }
+  .popup li.seed { color: #888; }
+  .popup .none { font-size: 12px; color: #889; margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Public toilets in Delft</h1>
+  <span class="stats" id="stats">Loading…</span>
+  <span class="spacer"></span>
+  <button id="locate">Where am I?</button>
+  <button id="export">Export my comments</button>
+  <button id="clear">Clear my comments</button>
+  <a class="btn" href="compass.html">Compass →</a>
+</header>
+<div id="notice"></div>
+<div id="picker">No <code>data.js</code> found. Choose your CSV file: <input type="file" id="file" accept=".csv,text/csv"></div>
+<div id="map"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="data.js" onerror="window.DATA_MISSING = true"></script>
+<script src="comments.js" onerror="window.COMMENTS_MISSING = true"></script>
+<script>
+const CONFIG = {
+  center: [52.0116, 4.3571],
+  zoom: 14,
+  latColumns: ['lat', 'latitude', 'y', 'breedtegraad'],
+  lonColumns: ['lon', 'lng', 'long', 'longitude', 'x', 'lengtegraad'],
+  pointColumns: ['geometry', 'wkt', 'geom', 'point', 'location'],
+  idColumn: 'number',
+  nameColumn: 'name',
+  colorColumn: 'wheelchair',  // pins are coloured by this column; set to null for one colour
+  colors: { yes: '#27ae60', limited: '#f1c40f', no: '#c0392b', '': '#3b82c4' },
+  colorLabels: { yes: 'Wheelchair accessible', limited: 'Limited access', no: 'Not accessible', '': 'Unknown' },
+  commentRing: '#e67e22',
+  storageKey: 'toilet-comments-v1',
+  maxComment: 140,
+  tiles: {
+    'OpenStreetMap': {
+      url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    },
+    'Esri World Street Map': {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+      attribution: 'Tiles &copy; Esri &mdash; Source: Esri, HERE, Garmin, USGS, NGA, EPA, USDA, NPS'
+    },
+    'OpenTopoMap': {
+      url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+      attribution: 'Map data &copy; OpenStreetMap contributors, SRTM | Style &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
+      maxZoom: 17
+    }
+  }
+};
+
+// ---------- helpers ----------
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const num = v => { if (v == null) return NaN; const s = String(v).trim().replace(',', '.'); return s === '' ? NaN : Number(s); };
+const toiletId = (lat, lon) => lat.toFixed(5) + ',' + lon.toFixed(5);
+const notices = [];
+function notice(msg) { notices.push(msg); const n = document.getElementById('notice'); n.innerHTML = notices.map(esc).join('<br>'); n.style.display = 'block'; }
+
+// ---------- storage ----------
+function loadMine() {
+  try { return JSON.parse(localStorage.getItem(CONFIG.storageKey)) || {}; }
+  catch (e) { notice('Could not read saved comments (browser storage is blocked).'); return {}; }
+}
+function saveMine(obj) {
+  try { localStorage.setItem(CONFIG.storageKey, JSON.stringify(obj)); return true; }
+  catch (e) { notice('Saving is blocked in this browser, so your comment will disappear on reload.'); return false; }
+}
+let myComments = loadMine();
+const seedComments = (typeof SEED_COMMENTS !== 'undefined') ? SEED_COMMENTS : {};
+
+function commentsFor(id) {
+  const mine = (myComments[id] || []).map(c => ({ ...c, seed: false }));
+  const seed = (seedComments[id] || []).map(c => ({ ...c, seed: true }));
+  return mine.concat(seed).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+// ---------- map ----------
+const map = L.map('map').setView(CONFIG.center, CONFIG.zoom);
+const baseLayers = {};
+for (const [name, t] of Object.entries(CONFIG.tiles)) {
+  baseLayers[name] = L.tileLayer(t.url, { attribution: t.attribution, maxZoom: t.maxZoom || 19 });
+}
+const startLayer = location.protocol === 'file:' ? 'Esri World Street Map' : 'OpenStreetMap';
+baseLayers[startLayer].addTo(map);
+L.control.layers(baseLayers).addTo(map);
+
+if (CONFIG.colorColumn) {
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = () => {
+    const d = L.DomUtil.create('div', 'legend');
+    d.innerHTML = Object.keys(CONFIG.colors).map(k => `<i style="background:${CONFIG.colors[k]}"></i>${esc(CONFIG.colorLabels[k] || k)}`).join('<br>')
+      + `<br><i style="background:#fff;border:3px solid ${CONFIG.commentRing}"></i>Has comments`;
+    return d;
+  };
+  legend.addTo(map);
+}
+
+let toilets = [];
+const markers = {};
+
+function findColumn(fields, candidates) {
+  const lower = fields.map(f => f.toLowerCase().trim());
+  for (const c of candidates) { const i = lower.indexOf(c); if (i >= 0) return fields[i]; }
+  return null;
+}
+
+function parseCsv(text) {
+  const res = Papa.parse(text.trim(), { header: true, skipEmptyLines: true });
+  const fields = res.meta.fields || [];
+  const latCol = findColumn(fields, CONFIG.latColumns);
+  const lonCol = findColumn(fields, CONFIG.lonColumns);
+  const ptCol = (!latCol || !lonCol) ? findColumn(fields, CONFIG.pointColumns) : null;
+  if ((!latCol || !lonCol) && !ptCol) {
+    notice('Could not find latitude/longitude columns. Columns found: ' + fields.join(', '));
+    return [];
+  }
+  const out = [], skipped = [];
+  res.data.forEach((row, i) => {
+    let lat, lon;
+    if (latCol && lonCol) { lat = num(row[latCol]); lon = num(row[lonCol]); }
+    else {
+      const m = String(row[ptCol] || '').match(/POINT\s*\(\s*([-\d.,]+)\s+([-\d.,]+)\s*\)/i);
+      if (m) { lon = num(m[1]); lat = num(m[2]); }
+    }
+    if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) { skipped.push(i + 2); return; }
+    out.push({ lat, lon, id: toiletId(lat, lon), row, latCol, lonCol });
+  });
+  if (skipped.length) notice(`Skipped ${skipped.length} row(s) without valid coordinates (CSV lines ${skipped.slice(0, 10).join(', ')}${skipped.length > 10 ? '…' : ''}).`);
+  return out;
+}
+
+function toiletName(t) {
+  const n = t.row[CONFIG.nameColumn];
+  if (n && String(n).trim()) return String(n).trim();
+  return 'Toilet ' + (t.row[CONFIG.idColumn] || t.id);
+}
+
+function pinStyle(t) {
+  const key = CONFIG.colorColumn ? String(t.row[CONFIG.colorColumn] || '').trim().toLowerCase() : '';
+  const fill = CONFIG.colors[key] || CONFIG.colors[''];
+  const has = commentsFor(t.id).length > 0;
+  return {
+    radius: has ? 9 : 7,
+    fillColor: fill, fillOpacity: .9,
+    color: has ? CONFIG.commentRing : '#333',
+    weight: has ? 4 : 1.5
+  };
+}
+
+function popupHtml(t) {
+  const rows = Object.entries(t.row)
+    .filter(([k, v]) => k !== CONFIG.nameColumn && String(v).trim() !== '')
+    .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('');
+  const list = commentsFor(t.id);
+  const items = list.length
+    ? '<ul>' + list.map(c => `<li class="${c.seed ? 'seed' : ''}">${esc(c.text)}<span class="meta">${esc(c.date)}${c.seed ? ' · example comment' : ' · your comment'}</span></li>`).join('') + '</ul>'
+    : '<div class="none">No comments yet.</div>';
+  return `<div class="popup" data-id="${esc(t.id)}">
+    <h3>${esc(toiletName(t))}</h3>
+    <table>${rows}</table>
+    <textarea maxlength="${CONFIG.maxComment}" placeholder="What should the next person know?"></textarea>
+    <div class="row"><span class="count">0 / ${CONFIG.maxComment}</span><button disabled>Post</button></div>
+    ${items}
+  </div>`;
+}
+
+function wirePopup(t, marker) {
+  const el = marker.getPopup().getElement();
+  if (!el) return;
+  const ta = el.querySelector('textarea'), btn = el.querySelector('button'), count = el.querySelector('.count');
+  ta.addEventListener('input', () => {
+    const n = ta.value.length;
+    count.textContent = `${n} / ${CONFIG.maxComment}`;
+    count.classList.toggle('full', n >= CONFIG.maxComment);
+    btn.disabled = ta.value.trim() === '';
+  });
+  btn.addEventListener('click', () => {
+    const text = ta.value.trim().slice(0, CONFIG.maxComment);
+    if (!text) return;
+    (myComments[t.id] = myComments[t.id] || []).push({ text, date: new Date().toISOString().slice(0, 10) });
+    saveMine(myComments);
+    refreshMarker(t);
+    marker.setPopupContent(() => popupHtml(t));
+    wirePopup(t, marker);
+    updateStats();
+  });
+}
+
+function refreshMarker(t) { markers[t.id].setStyle(pinStyle(t)).setRadius(pinStyle(t).radius); }
+
+function updateStats() {
+  const withComments = toilets.filter(t => commentsFor(t.id).length).length;
+  document.getElementById('stats').textContent = `${toilets.length} toilets · ${withComments} with comments`;
+}
+
+function render(list) {
+  toilets = list;
+  list.forEach(t => {
+    const m = L.circleMarker([t.lat, t.lon], pinStyle(t)).addTo(map);
+    m.bindPopup(() => popupHtml(t), { maxWidth: 280, minWidth: 240 });
+    m.on('popupopen', () => wirePopup(t, m));
+    markers[t.id] = m;
+  });
+  if (list.length) map.fitBounds(L.latLngBounds(list.map(t => [t.lat, t.lon])), { padding: [30, 30] });
+  updateStats();
+}
+
+// ---------- buttons ----------
+document.getElementById('export').addEventListener('click', () => {
+  const lines = [['toilet_id', 'lat', 'lon', 'date', 'text']];
+  for (const [id, list] of Object.entries(myComments)) {
+    const [lat, lon] = id.split(',');
+    list.forEach(c => lines.push([id, lat, lon, c.date, c.text]));
+  }
+  if (lines.length === 1) { alert('You have not posted any comments yet.'); return; }
+  const csv = lines.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = 'my-toilet-comments.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+document.getElementById('clear').addEventListener('click', () => {
+  if (!confirm('Delete all your own comments? Example comments stay.')) return;
+  myComments = {};
+  try { localStorage.removeItem(CONFIG.storageKey); } catch (e) { notice('Could not clear browser storage.'); }
+  map.closePopup();
+  toilets.forEach(refreshMarker);
+  updateStats();
+});
+
+let youMarker = null;
+document.getElementById('locate').addEventListener('click', () => {
+  if (!navigator.geolocation) { notice('This browser cannot share its location.'); return; }
+  navigator.geolocation.getCurrentPosition(p => {
+    const ll = [p.coords.latitude, p.coords.longitude];
+    if (youMarker) youMarker.setLatLng(ll);
+    else youMarker = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1 }).addTo(map).bindTooltip('You are here');
+    map.setView(ll, 16);
+  }, err => notice('Location not available: ' + err.message), { enableHighAccuracy: true, timeout: 10000 });
+});
+
+// ---------- start ----------
+if (typeof TOILETS_CSV !== 'undefined' && !/PASTE YOUR CSV/.test(TOILETS_CSV)) {
+  render(parseCsv(TOILETS_CSV));
+} else {
+  document.getElementById('picker').style.display = 'block';
+  document.getElementById('stats').textContent = 'No data loaded';
+  document.getElementById('file').addEventListener('change', e => {
+    const f = e.target.files[0]; if (!f) return;
+    f.text().then(txt => { document.getElementById('picker').style.display = 'none'; render(parseCsv(txt)); });
+  });
+}
+</script>
+</body>
+</html>

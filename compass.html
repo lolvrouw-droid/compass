@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Toilet Compass</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { background: #102a3d; color: #f2f6fa; display: flex; flex-direction: column; align-items: center; padding: 16px 16px 24px; min-height: 100vh; }
+  header { width: 100%; max-width: 480px; display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header a { color: #9fd0f5; font-size: 14px; }
+  #warn { display: none; width: 100%; max-width: 480px; margin-top: 12px; padding: 10px 12px; background: #fff3c4; color: #5b4500; border-radius: 8px; font-size: 14px; }
+  #dial { position: relative; width: min(78vw, 340px); aspect-ratio: 1; margin: 22px 0 10px; border-radius: 50%; background: radial-gradient(circle, #183d57 0%, #12324a 70%); border: 3px solid #2c5a7b; }
+  #dial .tick { position: absolute; left: 50%; top: 6px; transform: translateX(-50%); font-size: 12px; color: #7fa7c4; }
+  #arrow { position: absolute; inset: 0; transition: transform .25s ease-out; }
+  #arrow svg { width: 100%; height: 100%; }
+  #arrow.idle { opacity: .25; }
+  #distance { font-size: 46px; font-weight: 700; letter-spacing: -1px; margin-top: 4px; }
+  #name { font-size: 18px; margin-top: 2px; color: #cfe3f2; text-align: center; }
+  #comment { max-width: 420px; margin-top: 12px; padding: 10px 14px; border-radius: 10px; background: #183d57; font-size: 15px; text-align: center; display: none; }
+  #comment .meta { display: block; margin-top: 4px; font-size: 12px; color: #8fb3cc; }
+  #status { margin-top: 10px; font-size: 13px; color: #8fb3cc; text-align: center; min-height: 1.2em; }
+  .buttons { display: flex; gap: 10px; margin-top: 18px; }
+  button { font: inherit; font-size: 16px; padding: 12px 20px; border: 0; border-radius: 10px; cursor: pointer; }
+  #start { background: #e67e22; color: #fff; font-weight: 600; }
+  #next { background: #2c5a7b; color: #fff; }
+  details { width: 100%; max-width: 480px; margin-top: auto; padding-top: 24px; }
+  summary { cursor: pointer; color: #9fd0f5; font-size: 14px; }
+  .sim { margin-top: 10px; padding: 12px; background: #183d57; border-radius: 10px; font-size: 14px; display: grid; gap: 10px; }
+  .sim select, .sim input[type=range] { width: 100%; }
+  .sim select { font: inherit; padding: 6px; border-radius: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Nearest toilet</h1>
+  <a href="index.html">← Map</a>
+</header>
+<div id="warn"></div>
+
+<div id="dial">
+  <span class="tick">ahead</span>
+  <div id="arrow" class="idle">
+    <svg viewBox="0 0 100 100" aria-hidden="true">
+      <polygon points="50,10 72,62 50,52 28,62" fill="#e67e22" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
+      <circle cx="50" cy="50" r="3" fill="#fff"/>
+    </svg>
+  </div>
+</div>
+
+<div id="distance">–</div>
+<div id="name">Press Start compass</div>
+<div id="comment"></div>
+<div id="status"></div>
+
+<div class="buttons">
+  <button id="start">Start compass</button>
+  <button id="next">Next nearest</button>
+</div>
+
+<details id="simPanel">
+  <summary>Simulate (for laptops)</summary>
+  <div class="sim">
+    <label><input type="checkbox" id="simOn"> Use simulated position and heading</label>
+    <label>Position
+      <select id="simPlace"></select>
+    </label>
+    <label>Heading: <span id="simHeadingVal">0</span>°
+      <input type="range" id="simHeading" min="0" max="359" value="0">
+    </label>
+  </div>
+</details>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="data.js" onerror="window.DATA_MISSING = true"></script>
+<script src="comments.js" onerror="window.COMMENTS_MISSING = true"></script>
+<script>
+const CONFIG = {
+  latColumns: ['lat', 'latitude', 'y', 'breedtegraad'],
+  lonColumns: ['lon', 'lng', 'long', 'longitude', 'x', 'lengtegraad'],
+  pointColumns: ['geometry', 'wkt', 'geom', 'point', 'location'],
+  idColumn: 'number',
+  nameColumn: 'name',
+  storageKey: 'toilet-comments-v1',
+  smoothing: 0.2,  // 0..1, lower = smoother but slower heading
+  places: [
+    { name: 'Markt (Nieuwe Kerk)', lat: 52.01206, lon: 4.35930 },
+    { name: 'Delft Centraal station', lat: 52.00667, lon: 4.35650 },
+    { name: 'Prinsenhof', lat: 52.01390, lon: 4.35480 },
+    { name: 'Oostpoort', lat: 52.00630, lon: 4.36880 },
+    { name: 'TU Delft Aula', lat: 51.99900, lon: 4.37360 }
+  ]
+};
+
+// ---------- helpers ----------
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const num = v => { if (v == null) return NaN; const s = String(v).trim().replace(',', '.'); return s === '' ? NaN : Number(s); };
+const toiletId = (lat, lon) => lat.toFixed(5) + ',' + lon.toFixed(5);
+const rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
+const norm = a => ((a % 360) + 360) % 360;
+function warn(msg) { const w = $('warn'); w.innerHTML += (w.innerHTML ? '<br>' : '') + esc(msg); w.style.display = 'block'; }
+
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000, dLat = rad(lat2 - lat1), dLon = rad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+function bearing(lat1, lon1, lat2, lon2) {
+  const y = Math.sin(rad(lon2 - lon1)) * Math.cos(rad(lat2));
+  const x = Math.cos(rad(lat1)) * Math.sin(rad(lat2)) - Math.sin(rad(lat1)) * Math.cos(rad(lat2)) * Math.cos(rad(lon2 - lon1));
+  return norm(deg(Math.atan2(y, x)));
+}
+const fmtDist = m => m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(m < 10000 ? 1 : 0)} km`;
+
+// ---------- data (same column detection as index.html) ----------
+function findColumn(fields, candidates) {
+  const lower = fields.map(f => f.toLowerCase().trim());
+  for (const c of candidates) { const i = lower.indexOf(c); if (i >= 0) return fields[i]; }
+  return null;
+}
+function parseCsv(text) {
+  const res = Papa.parse(text.trim(), { header: true, skipEmptyLines: true });
+  const fields = res.meta.fields || [];
+  const latCol = findColumn(fields, CONFIG.latColumns), lonCol = findColumn(fields, CONFIG.lonColumns);
+  const ptCol = (!latCol || !lonCol) ? findColumn(fields, CONFIG.pointColumns) : null;
+  if ((!latCol || !lonCol) && !ptCol) { warn('Could not find latitude/longitude columns in data.js.'); return []; }
+  const out = [];
+  res.data.forEach(row => {
+    let lat, lon;
+    if (latCol && lonCol) { lat = num(row[latCol]); lon = num(row[lonCol]); }
+    else { const m = String(row[ptCol] || '').match(/POINT\s*\(\s*([-\d.,]+)\s+([-\d.,]+)\s*\)/i); if (m) { lon = num(m[1]); lat = num(m[2]); } }
+    if (isFinite(lat) && isFinite(lon)) out.push({ lat, lon, id: toiletId(lat, lon), row });
+  });
+  return out;
+}
+function toiletName(t) {
+  const n = t.row[CONFIG.nameColumn];
+  return (n && String(n).trim()) ? String(n).trim() : 'Toilet ' + (t.row[CONFIG.idColumn] || t.id);
+}
+
+let toilets = [];
+if (typeof TOILETS_CSV !== 'undefined' && !/PASTE YOUR CSV/.test(TOILETS_CSV)) toilets = parseCsv(TOILETS_CSV);
+else warn('No data.js found next to this page, so there are no toilets to point to.');
+
+// ---------- comments ----------
+let myComments = {};
+try { myComments = JSON.parse(localStorage.getItem(CONFIG.storageKey)) || {}; } catch (e) { /* storage blocked: only examples */ }
+const seedComments = (typeof SEED_COMMENTS !== 'undefined') ? SEED_COMMENTS : {};
+function newestComment(id) {
+  const all = (myComments[id] || []).map(c => ({ ...c, label: 'your comment' }))
+    .concat((seedComments[id] || []).map(c => ({ ...c, label: 'example comment' })));
+  all.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  return all[0] || null;
+}
+
+// ---------- state ----------
+let pos = null;          // { lat, lon, accuracy }
+let heading = null;      // smoothed degrees, 0 = north
+let rank = 0;            // 0 = nearest, 1 = second nearest, ...
+let arrowAngle = 0;      // continuous rotation to avoid 359->0 spins
+let sensorsStarted = false;
+const simOn = () => $('simOn').checked;
+
+function smoothHeading(raw) {
+  if (heading == null) { heading = raw; return; }
+  const diff = ((raw - heading + 540) % 360) - 180;  // shortest way round
+  heading = norm(heading + diff * CONFIG.smoothing);
+}
+
+function currentPos() {
+  if (simOn()) { const p = CONFIG.places[$('simPlace').value]; return { lat: p.lat, lon: p.lon }; }
+  return pos;
+}
+function currentHeading() { return simOn() ? Number($('simHeading').value) : heading; }
+
+function update() {
+  const p = currentPos(), h = currentHeading();
+  if (!p || !toilets.length) return;
+  const sorted = toilets.map(t => ({ t, d: haversine(p.lat, p.lon, t.lat, t.lon) })).sort((a, b) => a.d - b.d);
+  const pick = sorted[rank % sorted.length];
+  const t = pick.t;
+
+  $('distance').textContent = fmtDist(pick.d);
+  $('name').textContent = (rank % sorted.length === 0 ? '' : `#${rank % sorted.length + 1} nearest · `) + toiletName(t);
+
+  const c = newestComment(t.id);
+  const box = $('comment');
+  if (c) { box.innerHTML = `“${esc(c.text)}”<span class="meta">${esc(c.date)} · ${esc(c.label)}</span>`; box.style.display = 'block'; }
+  else box.style.display = 'none';
+
+  const arrow = $('arrow');
+  if (h == null) {
+    arrow.classList.add('idle');
+    $('status').textContent = 'No compass heading yet. The arrow shows the direction as if you face north.';
+  } else {
+    arrow.classList.remove('idle');
+    $('status').textContent = simOn() ? 'Simulated position and heading' : (pos && pos.accuracy ? `GPS accuracy ± ${Math.round(pos.accuracy)} m` : '');
+  }
+  const target = norm(bearing(p.lat, p.lon, t.lat, t.lon) - (h || 0));
+  const delta = ((target - norm(arrowAngle) + 540) % 360) - 180;
+  arrowAngle += delta;
+  arrow.style.transform = `rotate(${arrowAngle}deg)`;
+}
+
+// ---------- sensors ----------
+function onOrientation(e) {
+  let raw = null;
+  if (typeof e.webkitCompassHeading === 'number') raw = e.webkitCompassHeading;             // iOS
+  else if (e.absolute !== false && typeof e.alpha === 'number') raw = norm(360 - e.alpha);  // Android
+  if (raw == null) return;
+  smoothHeading(raw);
+  if (!simOn()) update();
+}
+
+$('start').addEventListener('click', async () => {
+  if (!window.isSecureContext) {
+    warn('Location and compass only work when this page is opened over https (for example on GitHub Pages). Use the Simulate panel below on a laptop.');
+    $('simPanel').open = true;
+    return;
+  }
+  if (sensorsStarted) return;
+  sensorsStarted = true;
+  $('start').textContent = 'Compass on';
+
+  // iOS needs permission requested inside the click handler
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const r = await DeviceOrientationEvent.requestPermission();
+      if (r === 'granted') window.addEventListener('deviceorientation', onOrientation, true);
+      else warn('Motion & Orientation access was denied, so the arrow cannot follow your heading.');
+    } catch (e) { warn('Could not ask for compass access: ' + e.message); }
+  } else if ('ondeviceorientationabsolute' in window) {
+    window.addEventListener('deviceorientationabsolute', onOrientation, true);
+  } else {
+    window.addEventListener('deviceorientation', onOrientation, true);
+  }
+
+  if (!navigator.geolocation) { warn('This browser cannot share its location.'); return; }
+  $('status').textContent = 'Finding your location…';
+  navigator.geolocation.watchPosition(
+    p => { pos = { lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy }; if (!simOn()) update(); },
+    err => warn('Location not available: ' + err.message),
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
+  );
+});
+
+$('next').addEventListener('click', () => {
+  rank = (rank + 1) % Math.max(toilets.length, 1);
+  if (!currentPos()) { $('status').textContent = 'Start the compass or turn on Simulate first.'; return; }
+  update();
+});
+
+// ---------- simulator ----------
+CONFIG.places.forEach((p, i) => $('simPlace').add(new Option(p.name, i)));
+$('simOn').addEventListener('change', () => { rank = 0; update(); });
+$('simPlace').addEventListener('change', () => { rank = 0; if (simOn()) update(); });
+$('simHeading').addEventListener('input', () => { $('simHeadingVal').textContent = $('simHeading').value; if (simOn()) update(); });
+
+if (!window.isSecureContext) {
+  warn('Opened as a local file: the real compass needs https. Open the Simulate panel below to try it on a laptop.');
+  $('simPanel').open = true;
+}
+$('status').textContent = `${toilets.length} toilets loaded`;
+</script>
+</body>
+</html>
